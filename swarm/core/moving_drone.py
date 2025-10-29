@@ -9,12 +9,15 @@ import pybullet as p
 
 from gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
 from gym_pybullet_drones.utils.enums import (
-    DroneModel, Physics, ActionType, ObservationType,
+    DroneModel,
+    Physics,
+    ActionType,
+    ObservationType,
 )
 
 # ── project‑level utilities ────────────────────────────────────────────────
-from swarm.validator.reward import flight_reward          # 3‑term scorer
-from swarm.constants        import GOAL_TOL, HOVER_SEC, DRONE_HULL_RADIUS, MAX_RAY_DISTANCE
+from swarm.validator.reward import flight_reward  # 3‑term scorer
+from swarm.constants import GOAL_TOL, HOVER_SEC, DRONE_HULL_RADIUS, MAX_RAY_DISTANCE
 
 
 class MovingDroneAviary(BaseRLAviary):
@@ -25,7 +28,8 @@ class MovingDroneAviary(BaseRLAviary):
     The per‑step reward is the **increment** of `flight_reward`, so it can be
     fed directly to PPO/TD3/etc. without extra shaping.
     """
-    MAX_TILT_RAD: float = 1.047         # safety cut‑off for roll / pitch (rad)
+
+    MAX_TILT_RAD: float = 1.047  # safety cut‑off for roll / pitch (rad)
 
     # --------------------------------------------------------------------- #
     # 1. constructor
@@ -33,14 +37,14 @@ class MovingDroneAviary(BaseRLAviary):
     def __init__(
         self,
         task,
-        drone_model : DroneModel   = DroneModel.CF2X,
-        physics     : Physics      = Physics.PYB,
-        pyb_freq    : int          = 240,
-        ctrl_freq   : int          = 30,
-        gui         : bool         = False,
-        record      : bool         = False,
-        obs         : ObservationType = ObservationType.KIN,
-        act         : ActionType      = ActionType.RPM,
+        drone_model: DroneModel = DroneModel.CF2X,
+        physics: Physics = Physics.PYB,
+        pyb_freq: int = 240,
+        ctrl_freq: int = 30,
+        gui: bool = False,
+        record: bool = False,
+        obs: ObservationType = ObservationType.KIN,
+        act: ActionType = ActionType.RPM,
     ):
         """
         Parameters
@@ -49,52 +53,54 @@ class MovingDroneAviary(BaseRLAviary):
             Must expose `.start`, `.goal`, `.horizon`, `.sim_dt`.
         Remaining arguments are forwarded to ``BaseRLAviary`` unchanged.
         """
-        self.task       = task
-        self.GOAL_POS   = np.asarray(task.goal, dtype=float)
+        self.task = task
+        self.GOAL_POS = np.asarray(task.goal, dtype=float)
         self.EP_LEN_SEC = float(task.horizon)
 
         # internal book‑keeping
-        self._time_alive   = 0.0
-        self._hover_sec    = 0.0
-        self._success      = False
-        self._collision    = False
-        self._t_to_goal    = None
-        self._prev_score   = 0.0
+        self._time_alive = 0.0
+        self._hover_sec = 0.0
+        self._success = False
+        self._collision = False
+        self._t_to_goal = None
+        self._prev_score = 0.0
 
         # ‑‑‑ define 16 ray directions for obstacle detection ‑‑‑
         self._init_ray_directions()
 
         # Let BaseRLAviary set up the PyBullet world
         super().__init__(
-            drone_model  = drone_model,
-            num_drones   = 1,
-            initial_xyzs = np.asarray([task.start]),
-            initial_rpys = None,
-            physics      = physics,
-            pyb_freq     = pyb_freq,
-            ctrl_freq    = ctrl_freq,
-            gui          = gui,
-            record       = record,
-            obs          = obs,
-            act          = act,
+            drone_model=drone_model,
+            num_drones=1,
+            initial_xyzs=np.asarray([task.start]),
+            initial_rpys=None,
+            physics=physics,
+            pyb_freq=pyb_freq,
+            ctrl_freq=ctrl_freq,
+            gui=gui,
+            record=record,
+            obs=obs,
+            act=act,
         )
 
         # ‑‑‑ extend observation with obstacle distances (16-D) + goal vector (3-D) ‑‑‑
         obs_space = cast(spaces.Box, self.observation_space)
-        old_low,  old_high  = obs_space.low, obs_space.high
+        old_low, old_high = obs_space.low, obs_space.high
 
         # Distance sensors: 16 dimensions, range [0.0, 1.0] (scaled from meters)
         dist_low = np.zeros((old_low.shape[0], 16), dtype=np.float32)
-        dist_high = np.ones((old_high.shape[0], 16), dtype=np.float32)  # scaled to [0.0, 1.0]
+        dist_high = np.ones(
+            (old_high.shape[0], 16), dtype=np.float32
+        )  # scaled to [0.0, 1.0]
 
         # Goal vector: 3 dimensions, unlimited range
         goal_low = -np.ones((old_low.shape[0], 3), dtype=np.float32) * np.inf
         goal_high = +np.ones((old_high.shape[0], 3), dtype=np.float32) * np.inf
 
         self.observation_space = spaces.Box(
-            low   = np.concatenate([old_low, dist_low, goal_low], axis=1),
-            high  = np.concatenate([old_high, dist_high, goal_high], axis=1),
-            dtype = np.float32,
+            low=np.concatenate([old_low, dist_low, goal_low], axis=1),
+            high=np.concatenate([old_high, dist_high, goal_high], axis=1),
+            dtype=np.float32,
         )
 
     # --------------------------------------------------------------------- #
@@ -108,40 +114,43 @@ class MovingDroneAviary(BaseRLAviary):
     def _init_ray_directions(self):
         """Initialize 16 ray directions for obstacle detection - balanced with side coverage."""
         # Mathematical constants
-        cos_45 = np.cos(np.radians(45))      # √2/2 ≈ 0.707107
-        sin_45 = np.sin(np.radians(45))      # √2/2 ≈ 0.707107
-        cos_30 = np.cos(np.radians(30))      # √3/2 ≈ 0.866025
-        sin_30 = np.sin(np.radians(30))      # 1/2 = 0.500000
+        cos_45 = np.cos(np.radians(45))  # √2/2 ≈ 0.707107
+        sin_45 = np.sin(np.radians(45))  # √2/2 ≈ 0.707107
+        cos_30 = np.cos(np.radians(30))  # √3/2 ≈ 0.866025
+        sin_30 = np.sin(np.radians(30))  # 1/2 = 0.500000
 
-        self.ray_directions = np.array([
-            # ═══ 2 PURE VERTICAL (essential for landing/overhead) ═══
-            [0, 0, 1],                       # 1: Pure Up
-            [0, 0, -1],                      # 2: Pure Down
-
-            # ═══ 8 HORIZONTAL - BALANCED COVERAGE ═══
-            [1, 0, 0],                       # 3: Forward (0°)
-            [cos_45, sin_45, 0],             # 4: Forward-Right (45°)
-            [0, 1, 0],                       # 5: Right (90°)
-            [-cos_45, sin_45, 0],            # 6: Back-Right (135°)
-            [-1, 0, 0],                      # 7: Back (180°)
-            [-cos_45, -sin_45, 0],           # 8: Back-Left (225°)
-            [0, -1, 0],                      # 9: Left (270°)
-            [cos_45, -sin_45, 0],            # 10: Forward-Left (315°)
-
-            # ═══ 6 DIAGONAL RAYS (3D coverage at ±30° elevation) ═══
-            [cos_30, 0, sin_30],             # 11: Forward-Up (30°)
-            [cos_30, 0, -sin_30],            # 12: Forward-Down (-30°)
-            [-cos_30, 0, sin_30],            # 13: Back-Up (30°)
-            [-cos_30, 0, -sin_30],           # 14: Back-Down (-30°)
-            [0, cos_30, sin_30],             # 15: Right-Up (30°)
-            [0, -cos_30, sin_30],            # 16: Left-Up (30°)
-        ], dtype=np.float32)
+        self.ray_directions = np.array(
+            [
+                # ═══ 2 PURE VERTICAL (essential for landing/overhead) ═══
+                [0, 0, 1],  # 1: Pure Up
+                [0, 0, -1],  # 2: Pure Down
+                # ═══ 8 HORIZONTAL - BALANCED COVERAGE ═══
+                [1, 0, 0],  # 3: Forward (0°)
+                [cos_45, sin_45, 0],  # 4: Forward-Right (45°)
+                [0, 1, 0],  # 5: Right (90°)
+                [-cos_45, sin_45, 0],  # 6: Back-Right (135°)
+                [-1, 0, 0],  # 7: Back (180°)
+                [-cos_45, -sin_45, 0],  # 8: Back-Left (225°)
+                [0, -1, 0],  # 9: Left (270°)
+                [cos_45, -sin_45, 0],  # 10: Forward-Left (315°)
+                # ═══ 6 DIAGONAL RAYS (3D coverage at ±30° elevation) ═══
+                [cos_30, 0, sin_30],  # 11: Forward-Up (30°)
+                [cos_30, 0, -sin_30],  # 12: Forward-Down (-30°)
+                [-cos_30, 0, sin_30],  # 13: Back-Up (30°)
+                [-cos_30, 0, -sin_30],  # 14: Back-Down (-30°)
+                [0, cos_30, sin_30],  # 15: Right-Up (30°)
+                [0, -cos_30, sin_30],  # 16: Left-Up (30°)
+            ],
+            dtype=np.float32,
+        )
 
         # Detection range and small origin offset to avoid self-hits
         self.max_ray_distance: float = MAX_RAY_DISTANCE
         self._ray_origin_offset: float = DRONE_HULL_RADIUS
 
-    def _get_obstacle_distances(self, drone_position: np.ndarray, drone_orientation: np.ndarray) -> np.ndarray:
+    def _get_obstacle_distances(
+        self, drone_position: np.ndarray, drone_orientation: np.ndarray
+    ) -> np.ndarray:
         """
         Perform 16-ray casting for obstacle detection using batch processing.
 
@@ -179,21 +188,20 @@ class MovingDroneAviary(BaseRLAviary):
 
             # Start just outside the drone to avoid self-hit, end at max range from COM
             start_pos = drone_position + world_dir * self._ray_origin_offset
-            end_pos   = drone_position + world_dir * self.max_ray_distance
+            end_pos = drone_position + world_dir * self.max_ray_distance
 
             start_positions.append(start_pos.tolist())
             end_positions.append(end_pos.tolist())
 
         # Batch ray test - pass the correct physics client
         results = p.rayTestBatch(
-            start_positions, end_positions,
-            physicsClientId=getattr(self, "CLIENT", 0)
+            start_positions, end_positions, physicsClientId=getattr(self, "CLIENT", 0)
         )
 
         # Extract distances from results, converting "from start" to "from COM"
         distances = []
         for r in results:
-            hit_uid = r[0]          # -1 means no hit
+            hit_uid = r[0]  # -1 means no hit
             hit_frac = float(r[2])  # [0,1] along the segment (start->end)
             if hit_uid != -1:
                 # distance from COM = offset + fraction*segment_length, clamped
@@ -204,39 +212,42 @@ class MovingDroneAviary(BaseRLAviary):
 
         return np.array(distances, dtype=np.float32)
 
-    def _euler_to_rotation_matrix(self, roll: float, pitch: float, yaw: float) -> np.ndarray:
+    def _euler_to_rotation_matrix(
+        self, roll: float, pitch: float, yaw: float
+    ) -> np.ndarray:
         """
         Convert Euler angles directly to rotation matrix (body->world).
         """
         cr, sr = np.cos(roll), np.sin(roll)
         cp, sp = np.cos(pitch), np.sin(pitch)
         cy, sy = np.cos(yaw), np.sin(yaw)
-        return np.array([
-            [cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
-            [sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
-            [-sp,   cp*sr,            cp*cr           ]
-        ])
+        return np.array(
+            [
+                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                [-sp, cp * sr, cp * cr],
+            ]
+        )
 
     def _check_collision(self) -> bool:
         """
         Check if drone has collided with any obstacle using PyBullet contact points.
         Returns True if collision detected, False otherwise.
-        
+
         CRITICAL: Only contacts with the flat landing surface are allowed (landing on TAO badge).
         All other contacts are collisions (platform sides, obstacles, etc.).
         """
         drone_id = self.DRONE_IDS[0]
         contact_points = p.getContactPoints(
-            bodyA=drone_id,
-            physicsClientId=getattr(self, "CLIENT", 0)
+            bodyA=drone_id, physicsClientId=getattr(self, "CLIENT", 0)
         )
-        
+
         if not contact_points:
             return False
-        
+
         # Get the landing surface body ID from the environment
-        landing_surface_uid = getattr(self, '_landing_surface_uid', None)
-        
+        landing_surface_uid = getattr(self, "_landing_surface_uid", None)
+
         # Check each contact point
         for contact in contact_points:
             body_b = contact[2]  # Second body in contact
@@ -244,14 +255,17 @@ class MovingDroneAviary(BaseRLAviary):
                 # Additional check: ensure meaningful contact force
                 normal_force = contact[9]
                 if normal_force > 0.01:  # Minimum threshold to avoid numerical noise
-                    
+
                     # CRITICAL FIX: Only allow contacts with the flat landing surface
-                    if landing_surface_uid is not None and body_b == landing_surface_uid:
+                    if (
+                        landing_surface_uid is not None
+                        and body_b == landing_surface_uid
+                    ):
                         continue  # This contact is allowed (landing on TAO badge surface)
-                    
+
                     # All other contacts are collisions (platform side, obstacles, etc.)
                     return True
-        
+
         return False
 
     # --------------------------------------------------------------------- #
@@ -265,17 +279,17 @@ class MovingDroneAviary(BaseRLAviary):
         obs, info = super().reset(**kwargs)
 
         self._time_alive = 0.0
-        self._hover_sec  = 0.0
-        self._success    = False
-        self._collision  = False
-        self._t_to_goal  = None
+        self._hover_sec = 0.0
+        self._success = False
+        self._collision = False
+        self._t_to_goal = None
 
         # baseline score (t = 0, e = 0)
         self._prev_score = flight_reward(
-            success = False,
-            t       = 0.0,
-            horizon = self.EP_LEN_SEC,
-            task    = None,
+            success=False,
+            t=0.0,
+            horizon=self.EP_LEN_SEC,
+            task=None,
         )
 
         return obs, info
@@ -287,21 +301,25 @@ class MovingDroneAviary(BaseRLAviary):
         """
         # current distance to goal
         state = self._getDroneStateVector(0)
-        dist  = float(np.linalg.norm(state[0:3] - self.GOAL_POS))
+        dist = float(np.linalg.norm(state[0:3] - self.GOAL_POS))
 
         # ── success detection: remain inside TAO badge with proper height constraints ──
         # Use 2D horizontal distance + vertical constraints
-        horizontal_distance = float(np.linalg.norm(state[0:2] - self.GOAL_POS[0:2]))  # X,Y only
-        vertical_distance = abs(state[2] - self.GOAL_POS[2])                          # Z only
-        
+        horizontal_distance = float(
+            np.linalg.norm(state[0:2] - self.GOAL_POS[0:2])
+        )  # X,Y only
+        vertical_distance = abs(state[2] - self.GOAL_POS[2])  # Z only
+
         # Success requires: within TAO badge horizontally + proper height + above platform
-        reached = (horizontal_distance < GOAL_TOL and       # Within TAO badge radius
-                  vertical_distance < 0.3 and              # Within 30cm of surface  
-                  state[2] >= self.GOAL_POS[2] - 0.1)      # Above platform (not below)
+        reached = (
+            horizontal_distance < GOAL_TOL  # Within TAO badge radius
+            and vertical_distance < 0.3  # Within 30cm of surface
+            and state[2] >= self.GOAL_POS[2] - 0.1
+        )  # Above platform (not below)
         if reached:
             self._hover_sec += self._sim_dt
             if self._hover_sec >= HOVER_SEC and not self._success:
-                self._success   = True
+                self._success = True
                 self._t_to_goal = self._time_alive
         else:
             self._hover_sec = 0.0
@@ -315,15 +333,60 @@ class MovingDroneAviary(BaseRLAviary):
             score = 0.0
         else:
             score = flight_reward(
-                success = self._success,
-                t       = (self._t_to_goal if self._success else self._time_alive),
-                horizon = self.EP_LEN_SEC,
-                task    = None,
+                success=self._success,
+                t=(self._t_to_goal if self._success else self._time_alive),
+                horizon=self.EP_LEN_SEC,
+                task=None,
             )
 
-        r_t              = score - self._prev_score
+        r_t = score - self._prev_score
         self._prev_score = score
-        return float(r_t)
+
+        # pos = state[0:3]
+        # quat = state[3:7]
+        current_rpy = state[7:10]
+        # velocity = state[10:13]
+        # angular = state[13:16]
+        # last_action = state[16:20]
+
+        # prev_dist = float(np.linalg.norm(self._prev_pos - self.GOAL_POS))
+        # reward_dist = 5 * (prev_dist - dist)
+
+        prev_horizon_dist = float(
+            np.linalg.norm(self._prev_pos[0:2] - self.GOAL_POS[0:2])
+        )
+        reward_horizon_dist = 5 * (prev_horizon_dist - horizontal_distance)
+
+        prev_vertical_dist = abs(self._prev_pos[2] - self.GOAL_POS[2])
+        reward_vertical_dist = 5 * (prev_vertical_dist - vertical_distance)
+
+        if state[2] - self.GOAL_POS[2] >= 0.1 and vertical_distance < 0.3:
+            reward_vertical_dist += 2
+
+        dis_count = 0
+        for i in range(0, 16):
+            if self._obs_distance[0, i] <= 0.3:
+                dis_count += 1
+
+        if (
+            abs(current_rpy[0]) > self.MAX_TILT_RAD
+            or abs(current_rpy[1]) > self.MAX_TILT_RAD
+        ):
+            dis_count += 1
+
+        reward = reward_horizon_dist + reward_vertical_dist - dis_count * 10
+
+        # if not reached:
+        # reward = reward - self._sim_dt * 0.5
+
+        self._prev_pos = state[0:3]
+
+        if reached:
+            reward = (
+                0.3 / reward_horizon_dist + 0.3 / reward_vertical_dist - dis_count * 10
+            )
+
+        return float(reward)
 
     # -------- termination ------------------------------------------------ #
     def _computeTerminated(self) -> bool:
@@ -334,7 +397,7 @@ class MovingDroneAviary(BaseRLAviary):
         if self._check_collision():
             self._collision = True
             return True
-            
+
         # Check for success
         return bool(self._success)
 
@@ -355,13 +418,13 @@ class MovingDroneAviary(BaseRLAviary):
     # -------- extra logging --------------------------------------------- #
     def _computeInfo(self):
         state = self._getDroneStateVector(0)
-        dist  = float(np.linalg.norm(state[0:3] - self.GOAL_POS))
+        dist = float(np.linalg.norm(state[0:3] - self.GOAL_POS))
         return {
             "distance_to_goal": dist,
-            "score"           : self._prev_score,
-            "success"         : self._success,
-            "collision"       : self._collision,
-            "t_to_goal"       : self._t_to_goal,
+            "score": self._prev_score,
+            "success": self._success,
+            "collision": self._collision,
+            "t_to_goal": self._t_to_goal,
         }
 
     # -------- observation extension -------------------------------------- #
@@ -372,13 +435,17 @@ class MovingDroneAviary(BaseRLAviary):
         Distances are computed from the **current PyBullet pose** and
         then scaled to [0,1] by dividing by `max_ray_distance` (10 m).
         """
-        base_obs: NDArray[np.float32] | None = super()._computeObs()  # shape (1, 112) in your setup
+        base_obs: NDArray[np.float32] | None = (
+            super()._computeObs()
+        )  # shape (1, 112) in your setup
         if base_obs is None:
             return np.zeros((1, 131), dtype=np.float32)
 
         # --- Get exact pose from PyBullet to stay in sync with physics ---
         uid = self.DRONE_IDS[0]
-        pos_w, orn_w = p.getBasePositionAndOrientation(uid, physicsClientId=getattr(self, "CLIENT", 0))
+        pos_w, orn_w = p.getBasePositionAndOrientation(
+            uid, physicsClientId=getattr(self, "CLIENT", 0)
+        )
         pos_w = np.asarray(pos_w, dtype=float)
         rot_m = np.asarray(p.getMatrixFromQuaternion(orn_w), dtype=float).reshape(3, 3)
 
@@ -391,4 +458,6 @@ class MovingDroneAviary(BaseRLAviary):
         # Goal vector relative to current position (scaled by ray distance)
         rel = ((self.GOAL_POS - pos_w) / self.max_ray_distance).reshape(1, 3)
 
-        return np.concatenate([base_obs, distances_scaled, rel], axis=1).astype(np.float32)
+        return np.concatenate([base_obs, distances_scaled, rel], axis=1).astype(
+            np.float32
+        )
